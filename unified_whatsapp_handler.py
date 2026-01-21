@@ -155,11 +155,16 @@ class UnifiedWhatsAppHandler:
                 details = self.extract_leave_details(message)
                 session['leave_data'].update(details)
                 
+                print(f"DEBUG: Extracted details: {details}")
+                print(f"DEBUG: Session leave_data: {session['leave_data']}")
+                
                 missing_info = []
                 if 'days' not in session['leave_data']:
                     missing_info.append('number of days')
                 if 'reason' not in session['leave_data']:
                     missing_info.append('reason')
+                
+                print(f"DEBUG: Missing info: {missing_info}")
                 
                 if missing_info:
                     session['state'] = 'collecting_info'
@@ -173,6 +178,9 @@ class UnifiedWhatsAppHandler:
             new_details = self.extract_leave_details(message)
             session['leave_data'].update(new_details)
             
+            print(f"DEBUG: New details from collecting_info: {new_details}")
+            print(f"DEBUG: Updated session leave_data: {session['leave_data']}")
+            
             if 'days' in session['leave_data'] and 'reason' in session['leave_data']:
                 return self.confirm_leave_details(session)
             else:
@@ -182,52 +190,180 @@ class UnifiedWhatsAppHandler:
                 if 'reason' not in session['leave_data']:
                     missing.append('reason')
                 
+                print(f"DEBUG: Still missing: {missing}")
                 return f"I still need:\n• {chr(10).join(missing)}\n\nPlease provide the missing information."
         
         elif state == 'confirming':
             if message.lower().strip() in ['yes', 'y', 'confirm', 'ok', 'proceed']:
-                return self.submit_leave_request(session, phone)
+                return self.ask_for_substitute(session)
             elif message.lower().strip() in ['no', 'n', 'cancel']:
                 del self.user_sessions[session_key]
                 return "Leave application cancelled. Feel free to start again anytime!"
             else:
                 return "Please reply with 'yes' to confirm or 'no' to cancel the leave application."
         
+        elif state == 'selecting_substitute':
+            return self.handle_substitute_selection(session, phone, message)
+        
         return "I didn't understand. Please try again or type 'help' for assistance.\n\n(Type 'reset' to start over)"
     
     def parse_leave_intent(self, message: str) -> bool:
-        """Check if message contains leave application intent"""
+        """Check if message contains leave application intent using enhanced NLP"""
+        message_lower = message.lower().strip()
+        
+        # Enhanced leave keywords and phrases
         leave_keywords = [
-            'leave', 'apply for leave', 'need leave', 'want leave',
-            'sick leave', 'casual leave', 'emergency leave',
-            'vacation', 'time off', 'absent'
+            # Direct leave requests
+            'leave', 'apply for leave', 'need leave', 'want leave', 'request leave',
+            'take leave', 'get leave', 'have leave', 'go on leave',
+            
+            # Time off variations
+            'time off', 'day off', 'days off', 'week off', 'weeks off',
+            'vacation', 'holiday', 'break', 'rest',
+            
+            # Absence indicators
+            'absent', 'away', 'not available', 'unavailable', 'out of office',
+            'won\'t be in', 'will be away', 'cannot come', 'can\'t come',
+            
+            # Specific leave types
+            'sick leave', 'medical leave', 'casual leave', 'emergency leave',
+            'personal leave', 'family leave', 'maternity leave', 'paternity leave',
+            
+            # Informal expressions
+            'need to be away', 'have to go', 'going away', 'traveling',
+            'not coming', 'skip work', 'miss work', 'off work'
         ]
         
-        message_lower = message.lower()
-        return any(keyword in message_lower for keyword in leave_keywords)
+        # Intent patterns with regex
+        intent_patterns = [
+            r'\bi\s+(need|want|would like|require|request)\s+.*(leave|time off|day off|vacation)',
+            r'\bi\s+(will be|am going to be|gonna be)\s+.*(away|absent|unavailable|out)',
+            r'\bi\s+(have to|need to|must)\s+.*(go|travel|be away|take time)',
+            r'\bcan\s+i\s+(get|have|take)\s+.*(leave|time off|day off)',
+            r'\bi\s+(won\'t|will not|cannot|can\'t)\s+be\s+(in|available|here)',
+            r'\bapply\s+for\s+.*(leave|vacation|time off)',
+            r'\brequest\s+.*(leave|vacation|time off)',
+            r'\btake\s+.*(leave|vacation|time off|day off|week off)',
+            r'\bneed\s+.*(leave|vacation|time off|day off|week off)',
+            r'\bgoing\s+on\s+.*(leave|vacation|holiday)',
+        ]
+        
+        # Check keywords
+        keyword_match = any(keyword in message_lower for keyword in leave_keywords)
+        
+        # Check patterns
+        pattern_match = any(re.search(pattern, message_lower) for pattern in intent_patterns)
+        
+        return keyword_match or pattern_match
     
     def extract_leave_details(self, message: str) -> Dict:
-        """Extract leave details from message using regex"""
+        """Extract leave details from message using enhanced NLP"""
         details = {}
+        message_lower = message.lower().strip()
         
-        # Extract number of days
-        days_match = re.search(r'(\d+)\s*days?', message.lower())
-        if days_match:
-            details['days'] = int(days_match.group(1))
+        # Enhanced day extraction patterns
+        day_patterns = [
+            # Direct numbers with days/weeks
+            r'(\d+)\s*days?',
+            r'(\d+)\s*weeks?',
+            r'(\d+)\s*months?',
+            
+            # Written numbers
+            r'(one|two|three|four|five|six|seven|eight|nine|ten)\s*days?',
+            r'(one|two|three|four)\s*weeks?',
+            r'(a|an)\s*day',
+            r'(a|an)\s*week',
+            r'(a|an)\s*month',
+            
+            # Time expressions
+            r'for\s+(\d+)\s*days?',
+            r'for\s+(\d+)\s*weeks?',
+            r'for\s+(a|an|one)\s*(day|week)',
+            r'(\d+)\s*day\s*(leave|off|vacation)',
+            r'(\d+)\s*week\s*(leave|off|vacation)',
+            
+            # Casual expressions
+            r'couple\s+of\s+days',
+            r'few\s+days',
+            r'several\s+days',
+        ]
         
-        # Extract reason (everything after "for", "because", "due to")
+        # Extract days
+        for pattern in day_patterns:
+            match = re.search(pattern, message_lower)
+            if match:
+                day_text = match.group(1)
+                
+                # Convert text numbers to digits
+                text_to_num = {
+                    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'a': 1, 'an': 1, 'couple': 2, 'few': 3, 'several': 4
+                }
+                
+                if day_text.isdigit():
+                    days = int(day_text)
+                elif day_text in text_to_num:
+                    days = text_to_num[day_text]
+                else:
+                    continue
+                
+                # Convert weeks/months to days
+                if 'week' in match.group(0):
+                    days *= 7
+                elif 'month' in match.group(0):
+                    days *= 30
+                
+                details['days'] = days
+                break
+        
+        # Enhanced reason extraction patterns
         reason_patterns = [
-            r'for\s+(.+?)(?:\.|$)',
-            r'because\s+(.+?)(?:\.|$)',
-            r'due to\s+(.+?)(?:\.|$)',
-            r'reason:?\s*(.+?)(?:\.|$)'
+            # Common prepositions
+            r'for\s+(.+?)(?:\.|$|because|due to|since)',
+            r'because\s+(.+?)(?:\.|$|for|due to)',
+            r'due to\s+(.+?)(?:\.|$|because|for)',
+            r'since\s+(.+?)(?:\.|$|because|for)',
+            r'as\s+(.+?)(?:\.|$|because|for)',
+            r'to\s+(.+?)(?:\.|$|because|for|due to)',  # Added "to" pattern
+            
+            # Reason indicators
+            r'reason:?\s*(.+?)(?:\.|$)',
+            r'purpose:?\s*(.+?)(?:\.|$)',
+            
+            # Medical/personal reasons (standalone)
+            r'(sick|ill|unwell|not feeling well)',
+            r'(doctor|hospital|medical|appointment)',
+            r'(family|personal|emergency)',
+            r'(vacation|holiday|travel|trip)',
+            r'(wedding|marriage|funeral)',
+            r'(pregnant|pregnancy|maternity|paternity)',
+            r'(business|conference|meeting|training)',  # Added business reasons
+            
+            # Contextual extraction - more comprehensive
+            r'i\s+(am|will be|have to|need to|must)\s+(.+?)(?:\.|$)',
+            r'my\s+(.+?)(?:\.|$)',
+            r'going\s+(.+?)(?:\.|$)',
+            r'attending\s+(.+?)(?:\.|$)',  # Added attending pattern
+            
+            # Catch-all for "off" constructions
+            r'off\s+(.+?)(?:\.|$)',
+            r'leave\s+(.+?)(?:\.|$)',
         ]
         
         for pattern in reason_patterns:
-            reason_match = re.search(pattern, message.lower())
-            if reason_match:
-                details['reason'] = reason_match.group(1).strip()
-                break
+            match = re.search(pattern, message_lower)
+            if match:
+                reason = match.group(1).strip()
+                
+                # Clean up the reason
+                reason = re.sub(r'^(to|for|because|due to|since|as)\s+', '', reason)
+                reason = re.sub(r'\s+', ' ', reason)  # Remove extra spaces
+                
+                # Skip very short or generic reasons
+                if len(reason) > 2 and reason not in ['it', 'this', 'that', 'some', 'the']:
+                    details['reason'] = reason
+                    break
         
         return details
     
@@ -250,6 +386,139 @@ Please reply 'YES' to confirm or 'NO' to cancel.
         session['state'] = 'confirming'
         return confirmation_msg
     
+    def ask_for_substitute(self, session: Dict) -> str:
+        """Ask employee to suggest a substitute"""
+        leave_data = session['leave_data']
+        employee = session['employee']
+        
+        # Get available substitutes from HR system
+        substitutes = self.hr_agent.suggest_substitutes(employee['name'], leave_data['days'])
+        
+        substitute_list = ""
+        if substitutes:
+            substitute_list = "\n\n🔄 Available colleagues:\n"
+            for i, sub in enumerate(substitutes[:5], 1):
+                substitute_list += f"{i}. {sub}\n"
+            substitute_list += "\nYou can choose from the list above or suggest someone else."
+        
+        msg = f"""
+✅ Leave details confirmed!
+
+👤 Who would you like to suggest as your substitute during your absence?
+
+This helps ensure your work is covered while you're away.{substitute_list}
+
+Please reply with:
+• The name of your preferred substitute
+• "Skip" if you want to leave it to your manager
+• "No substitute needed" if your role doesn't require coverage
+
+Example: "Priya Sharma" or "Skip"
+        """.strip()
+        
+        session['state'] = 'selecting_substitute'
+        return msg
+    
+    def handle_substitute_selection(self, session: Dict, phone: str, message: str) -> str:
+        """Handle substitute selection by employee"""
+        message_lower = message.lower().strip()
+        
+        # Check for skip options
+        if message_lower in ['skip', 'no substitute', 'no substitute needed', 'none', 'manager decides']:
+            session['leave_data']['suggested_substitute'] = None
+            session['leave_data']['substitute_note'] = "Employee prefers manager to decide"
+            return self.submit_leave_request(session, phone)
+        
+        # Check for no substitute needed
+        if message_lower in ['no substitute needed', 'not needed', 'no coverage needed']:
+            session['leave_data']['suggested_substitute'] = None
+            session['leave_data']['substitute_note'] = "No substitute coverage required"
+            return self.submit_leave_request(session, phone)
+        
+        # Extract substitute name
+        substitute_name = self.extract_substitute_name(message)
+        
+        if substitute_name:
+            # Validate if substitute exists in database
+            substitute = self.hr_agent.find_teacher_by_name(substitute_name)
+            
+            if substitute:
+                session['leave_data']['suggested_substitute'] = substitute_name
+                session['leave_data']['substitute_note'] = f"Employee suggested: {substitute_name}"
+                
+                return f"""
+✅ Substitute Suggestion Recorded!
+
+👤 Suggested Substitute: {substitute_name}
+🏢 Department: {substitute.get('department', 'N/A')}
+
+Your leave request will now be submitted with this suggestion.
+                """.strip() + "\n\n" + self.submit_leave_request(session, phone)
+            else:
+                # Show available employees to help user
+                available_employees = []
+                for _, emp in self.hr_agent.df.iterrows():
+                    if emp.get('name') and emp['name'].lower() != session['employee']['name'].lower():
+                        available_employees.append(emp['name'])
+                
+                suggestion_list = ""
+                if available_employees:
+                    suggestion_list = f"\n\n💡 Available colleagues:\n"
+                    for emp in available_employees[:5]:  # Show first 5
+                        suggestion_list += f"• {emp}\n"
+                    if len(available_employees) > 5:
+                        suggestion_list += f"• ... and {len(available_employees) - 5} more"
+                
+                return f"""
+❌ I couldn't find "{substitute_name}" in our employee database.{suggestion_list}
+
+Please try again with:
+• The exact name of a colleague from the list above
+• "Skip" to let your manager decide  
+• "No substitute needed" if no coverage required
+
+Example: "Priya Sharma" or "Skip"
+                """.strip()
+        else:
+            return """
+❌ I didn't understand the substitute name.
+
+Please reply with:
+• The full name of your preferred substitute
+• "Skip" if you want your manager to decide
+• "No substitute needed" if no coverage required
+
+Example: "Priya Sharma" or "Skip"
+            """.strip()
+    
+    def extract_substitute_name(self, message: str) -> str:
+        """Extract substitute name from message"""
+        message = message.strip()
+        
+        # Remove common prefixes
+        prefixes_to_remove = [
+            'i suggest', 'i recommend', 'i prefer', 'i want', 'i choose',
+            'suggest', 'recommend', 'prefer', 'choose', 'select',
+            'my suggestion is', 'i think', 'maybe', 'how about'
+        ]
+        
+        message_lower = message.lower()
+        for prefix in prefixes_to_remove:
+            if message_lower.startswith(prefix):
+                message = message[len(prefix):].strip()
+                break
+        
+        # Clean up the name
+        message = re.sub(r'^(is|would be|could be|should be)\s+', '', message, flags=re.IGNORECASE)
+        message = message.strip('.,!?')
+        
+        # Basic name validation (at least 1 word, reasonable length)
+        words = message.split()
+        if len(words) >= 1 and len(message) <= 50 and len(message) >= 2 and all(word.replace('-', '').replace("'", '').isalpha() for word in words):
+            return message.title()  # Proper case
+        
+        return ""
+    
     def submit_leave_request(self, session: Dict, phone: str) -> str:
         """Submit the leave request and notify manager"""
         leave_data = session['leave_data']
@@ -268,6 +537,13 @@ Please reply 'YES' to confirm or 'NO' to cancel.
             # Get AI analysis
             ai_analysis = self.hr_agent.get_ai_analysis(leave_id)
             
+            # Prepare substitute information for manager
+            substitute_info = ""
+            if leave_data.get('suggested_substitute'):
+                substitute_info = f"\n\n👥 Employee's Substitute Suggestion:\n• {leave_data['suggested_substitute']}\n• Note: {leave_data.get('substitute_note', '')}"
+            elif leave_data.get('substitute_note'):
+                substitute_info = f"\n\n👥 Substitute Coverage:\n• {leave_data['substitute_note']}"
+            
             # Notify manager
             manager_phone = os.getenv('MANAGER_PHONE')
             if manager_phone:
@@ -278,7 +554,7 @@ Please reply 'YES' to confirm or 'NO' to cancel.
 📞 Phone: {employee.get('phone', 'N/A')}
 🏢 Department: {employee.get('department', 'N/A')}
 📅 Days Requested: {leave_data['days']} days
-📝 Reason: {leave_data['reason']}
+📝 Reason: {leave_data['reason']}{substitute_info}
 
 🤖 AI Analysis Summary:
 {ai_analysis.get('ai_analysis', 'Analysis not available')[:500]}...
@@ -295,12 +571,16 @@ Commands:
             if phone in self.user_sessions:
                 del self.user_sessions[phone]
             
+            substitute_msg = ""
+            if leave_data.get('suggested_substitute'):
+                substitute_msg = f"\n👥 Suggested Substitute: {leave_data['suggested_substitute']}"
+            
             return f"""
 ✅ Leave Request Submitted Successfully!
 
 📋 Request ID: #{leave_id}
 📅 Days: {leave_data['days']} days
-📝 Reason: {leave_data['reason']}
+📝 Reason: {leave_data['reason']}{substitute_msg}
 
 Your manager has been notified and will review your request. You'll receive an update once it's processed.
 
