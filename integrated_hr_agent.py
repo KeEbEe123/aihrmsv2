@@ -34,7 +34,7 @@ class Leave:
     end_date: date
     days: int
     reason: str
-    status: str = "pending"
+    status: str = "pending"  # pending, manager_approved, approved, rejected
     suggested_substitute: Optional[str] = None
     substitute_note: Optional[str] = None
 
@@ -182,7 +182,20 @@ DO NOT make the final decision - only provide analysis and recommendation.
         }
     
     def approve_leave(self, leave_id: int) -> Dict:
-        """HOD approves the leave request"""
+        """HOD approves the leave request (pending substitute confirmation)"""
+        leave = next((l for l in self.leaves if l.id == leave_id), None)
+        if not leave:
+            return {"status": "error", "message": "Leave request not found"}
+        
+        leave.status = "manager_approved"  # Pending substitute confirmation
+        return {
+            "status": "success",
+            "message": f"Leave #{leave_id} approved by manager for {leave.teacher_name}",
+            "leave_id": leave_id
+        }
+    
+    def finalize_leave_approval(self, leave_id: int) -> Dict:
+        """Finalize leave approval after substitute accepts"""
         leave = next((l for l in self.leaves if l.id == leave_id), None)
         if not leave:
             return {"status": "error", "message": "Leave request not found"}
@@ -190,7 +203,7 @@ DO NOT make the final decision - only provide analysis and recommendation.
         leave.status = "approved"
         return {
             "status": "success",
-            "message": f"Leave #{leave_id} approved for {leave.teacher_name}",
+            "message": f"Leave #{leave_id} fully approved for {leave.teacher_name}",
             "leave_id": leave_id
         }
     
@@ -248,6 +261,18 @@ DO NOT make the final decision - only provide analysis and recommendation.
         return {
             "status": "success",
             "message": f"Substitution #{substitution_id} confirmed by {sub.substitute_name}"
+        }
+    
+    def confirm_substitution_by_leave_id(self, leave_id: int, substitute_name: str) -> Dict:
+        """Confirm substitution by leave ID and substitute name"""
+        sub = next((s for s in self.substitutions if s.leave_id == leave_id and s.substitute_name == substitute_name), None)
+        if not sub:
+            return {"status": "error", "message": "Substitution not found"}
+        
+        sub.status = "confirmed"
+        return {
+            "status": "success",
+            "message": f"Substitution confirmed by {substitute_name} for leave #{leave_id}"
         }
     
     def get_leave_status(self, leave_id: int) -> Dict:

@@ -89,6 +89,11 @@ class UnifiedWhatsAppHandler:
     
     def route_message(self, phone: str, message: str) -> Tuple[str, str]:
         """Route message to appropriate handler based on phone number and message content"""
+        
+        # Check if message is a substitute response (Accept/Decline #ID)
+        if self.is_substitute_response(message):
+            return "substitute", self.handle_substitute_response(phone, message)
+        
         # Check if user is a manager
         if self.is_manager(phone):
             # Check if message looks like a manager command
@@ -109,7 +114,166 @@ class UnifiedWhatsAppHandler:
             else:
                 return "error", "❌ Sorry, I couldn't find your employee record. Please contact HR directly or ensure you're messaging from your registered phone number."
     
-    def is_manager_command(self, message: str) -> bool:
+    def is_substitute_response(self, message: str) -> bool:
+        """Check if message is a substitute response"""
+        message_lower = message.lower().strip()
+        
+        # Check for accept/decline patterns with leave ID
+        accept_patterns = [
+            r'accept\s+#?\d+',
+            r'yes\s+#?\d+',
+            r'confirm\s+#?\d+',
+            r'ok\s+#?\d+',
+        ]
+        
+        decline_patterns = [
+            r'decline\s+#?\d+',
+            r'reject\s+#?\d+',
+            r'no\s+#?\d+',
+            r'cannot\s+#?\d+',
+            r'can\'t\s+#?\d+',
+        ]
+        
+        all_patterns = accept_patterns + decline_patterns
+        
+        return any(re.search(pattern, message_lower) for pattern in all_patterns)
+    
+    def handle_substitute_response(self, phone: str, message: str) -> str:
+        """Handle substitute accept/decline responses"""
+        message_lower = message.lower().strip()
+        
+        # Extract leave ID
+        leave_id_match = re.search(r'#?(\d+)', message)
+        if not leave_id_match:
+            return "❌ Please include the leave request ID. Example: 'Accept #1' or 'Decline #1'"
+        
+        leave_id = int(leave_id_match.group(1))
+        
+        # Find the substitute in database
+        substitute = self.find_employee_by_phone(phone)
+        if not substitute:
+            return "❌ Sorry, I couldn't find your employee record."
+        
+        substitute_name = substitute['name']
+        
+        # Check if this person is actually assigned as substitute for this leave
+        substitution = next((s for s in self.hr_agent.substitutions if s.leave_id == leave_id and s.substitute_name == substitute_name), None)
+        if not substitution:
+            return f"❌ You are not assigned as substitute for leave request #{leave_id}."
+        
+        # Determine if accepting or declining
+        if any(word in message_lower for word in ['accept', 'yes', 'confirm', 'ok']):
+            return self.handle_substitute_accept(leave_id, substitute_name)
+        elif any(word in message_lower for word in ['decline', 'reject', 'no', 'cannot', 'can\'t']):
+            return self.handle_substitute_decline(leave_id, substitute_name)
+        else:
+            return "❌ Please clearly state 'Accept' or 'Decline'. Example: 'Accept #1' or 'Decline #1'"
+    
+    def handle_substitute_accept(self, leave_id: int, substitute_name: str) -> str:
+        """Handle substitute accepting the assignment"""
+        # Confirm the substitution
+        result = self.hr_agent.confirm_substitution_by_leave_id(leave_id, substitute_name)
+        if result['status'] != 'success':
+            return f"❌ Error confirming substitution: {result['message']}"
+        
+        # Finalize the leave approval
+        final_result = self.hr_agent.finalize_leave_approval(leave_id)
+        if final_result['status'] != 'success':
+            return f"❌ Error finalizing leave: {final_result['message']}"
+        
+        # Get leave details for notifications
+        leave = next((l for l in self.hr_agent.leaves if l.id == leave_id), None)
+        if not leave:
+            return f"❌ Leave request #{leave_id} not found."
+        
+        # Notify the employee that leave is fully approved
+        employee_phone = self.get_employee_phone_by_leave_id(leave_id)
+        if employee_phone:
+            employee_msg = f"""
+✅ FINAL CONFIRMATION: Your leave request #{leave_id} is FULLY APPROVED!
+
+📅 Days: {leave.days} days
+📝 Reason: {leave.reason}
+👥 Substitute: {substitute_name} has accepted the assignment
+
+Your leave is now confirmed. Enjoy your time off! 🌟
+            """.strip()
+            
+            self.send_whatsapp_message(employee_phone, employee_msg)
+        
+        # Notify the manager
+        manager_phone = os.getenv('MANAGER_PHONE')
+        if manager_phone:
+            manager_msg = f"""
+✅ Substitute Confirmation Update
+
+📋 Leave Request #{leave_id}
+👤 Employee: {leave.teacher_name}
+👥 Substitute: {substitute_name}
+
+Status: ✅ SUBSTITUTE ACCEPTED
+• Employee has been notified of final approval
+• Leave is now fully confirmed
+            """.strip()
+            
+            self.send_whatsapp_message(f"whatsapp:{manager_phone}", manager_msg)
+        
+        return f"""
+✅ Thank you for accepting the substitute assignment!
+
+📋 Leave Request: #{leave_id}
+👤 Employee: {leave.teacher_name}
+🗓️ Your substitute period is now confirmed
+
+The employee has been notified that their leave is fully approved.
+        """.strip()
+    
+    def handle_substitute_decline(self, leave_id: int, substitute_name: str) -> str:
+        """Handle substitute declining the assignment"""
+        # Update substitution status to declined
+        substitution = next((s for s in self.hr_agent.substitutions if s.leave_id == leave_id and s.substitute_name == substitute_name), None)
+        if substitution:
+            substitution.status = "declined"
+        
+        # Get leave details
+        leave = next((l for l in self.hr_agent.leaves if l.id == leave_id), None)
+        if not leave:
+            return f"❌ Leave request #{leave_id} not found."
+        
+        # Notify the manager that substitute declined
+        manager_phone = os.getenv('MANAGER_PHONE')
+        if manager_phone:
+            # Get available substitutes for manager
+            ai_result = self.hr_agent.get_ai_analysis(leave_id)
+            substitutes = ai_result.get('substitutes', []) if ai_result['status'] == 'success' else []
+            substitute_list = "\n".join([f"• {sub}" for sub in substitutes]) if substitutes else "• No other substitutes available"
+            
+            manager_msg = f"""
+❌ Substitute Declined Assignment
+
+📋 Leave Request #{leave_id}
+👤 Employee: {leave.teacher_name}
+👥 Declined by: {substitute_name}
+
+⚠️ ACTION REQUIRED: Please assign another substitute
+Available options:
+{substitute_list}
+
+To assign: "Assign [name] to #{leave_id}"
+Note: Employee will only be notified after new substitute accepts.
+            """.strip()
+            
+            self.send_whatsapp_message(f"whatsapp:{manager_phone}", manager_msg)
+        
+        return f"""
+❌ Substitute assignment declined
+
+📋 Leave Request: #{leave_id}
+👤 Employee: {leave.teacher_name}
+
+Your manager has been notified and will assign another substitute.
+Thank you for your response.
+        """.strip()
         """Check if message looks like a manager command"""
         message_lower = message.lower().strip()
         
@@ -659,7 +823,7 @@ Thank you! 🙏
         return {'action': 'unknown'}
     
     def approve_leave(self, leave_id: int) -> str:
-        """Approve a leave request"""
+        """Approve a leave request (conditional on substitute acceptance)"""
         ai_result = self.hr_agent.get_ai_analysis(leave_id)
         if ai_result['status'] != 'success':
             return f"❌ Error: {ai_result['message']}"
@@ -671,25 +835,9 @@ Thank you! 🙏
         # Get the leave record to check for employee substitute suggestion
         leave = next((l for l in self.hr_agent.leaves if l.id == leave_id), None)
         
-        # Notify the employee
-        employee_phone = self.get_employee_phone_by_leave_id(leave_id)
-        if employee_phone:
-            employee_msg = f"""
-✅ Great News! Your leave request #{leave_id} has been APPROVED!
-
-📅 Days: {ai_result['leave_days']} days
-📝 Reason: {ai_result['reason']}
-
-Your substitute will be assigned shortly. You'll receive confirmation once everything is set up.
-
-Enjoy your time off! 🌟
-            """.strip()
-            
-            self.send_whatsapp_message(employee_phone, employee_msg)
-        
         # Handle employee substitute suggestion
         if leave and leave.suggested_substitute:
-            # Employee suggested a substitute - auto-assign and notify
+            # Employee suggested a substitute - assign and wait for confirmation
             assign_result = self.hr_agent.assign_substitute(leave_id, leave.suggested_substitute)
             
             if assign_result['status'] == 'success':
@@ -697,19 +845,20 @@ Enjoy your time off! 🌟
                 self.notify_substitute(leave.suggested_substitute, leave_id, ai_result['teacher_name'])
                 
                 return f"""
-✅ Leave #{leave_id} APPROVED successfully!
+✅ Leave #{leave_id} APPROVED by Manager!
 
 👤 Employee: {ai_result['teacher_name']}
 📅 Days: {ai_result['leave_days']} days
 
-Employee has been notified via WhatsApp.
-
 👥 Employee's Substitute Suggestion ACCEPTED:
 • Substitute: {leave.suggested_substitute}
-• Status: Assigned and notified via WhatsApp
-• Note: {leave.substitute_note or 'Employee suggestion'}
+• Status: Notified via WhatsApp
 
-✅ All done! Both employee and substitute have been notified.
+⏳ PENDING: Waiting for substitute confirmation
+• Employee will be notified once substitute accepts
+• If substitute declines, you'll need to assign another
+
+Current Status: Manager Approved (Pending Substitute)
                 """.strip()
             else:
                 # Fallback to manual assignment if auto-assign fails
@@ -717,12 +866,10 @@ Employee has been notified via WhatsApp.
                 substitute_list = "\n".join([f"• {sub}" for sub in substitutes]) if substitutes else "• No substitutes available"
                 
                 return f"""
-✅ Leave #{leave_id} APPROVED successfully!
+✅ Leave #{leave_id} APPROVED by Manager!
 
 👤 Employee: {ai_result['teacher_name']}
 📅 Days: {ai_result['leave_days']} days
-
-Employee has been notified via WhatsApp.
 
 ⚠️ Employee suggested "{leave.suggested_substitute}" but assignment failed.
 
@@ -731,6 +878,7 @@ Available substitutes:
 {substitute_list}
 
 To assign: "Assign [name] to #{leave_id}"
+Note: Employee will only be notified after substitute accepts.
                 """.strip()
         else:
             # No employee suggestion - show available substitutes
@@ -742,19 +890,17 @@ To assign: "Assign [name] to #{leave_id}"
                 substitute_note = f"\n💬 Employee note: {leave.substitute_note}\n"
             
             return f"""
-✅ Leave #{leave_id} APPROVED successfully!
+✅ Leave #{leave_id} APPROVED by Manager!
 
 👤 Employee: {ai_result['teacher_name']}
-📅 Days: {ai_result['leave_days']} days
-
-Employee has been notified via WhatsApp.{substitute_note}
+📅 Days: {ai_result['leave_days']} days{substitute_note}
 
 🔄 Next Step: Assign Substitute
 Available substitutes:
 {substitute_list}
 
 To assign: "Assign [name] to #{leave_id}"
-Example: "Assign Priya Sharma to #{leave_id}"
+Note: Employee will only be notified after substitute accepts.
             """.strip()
     
     def notify_substitute(self, substitute_name: str, leave_id: int, employee_name: str) -> bool:
@@ -869,7 +1015,11 @@ Thank you for your support! 🙏
 📋 Leave ID: #{leave_id}
 📱 Status: {notification_status}
 
-The substitute has been assigned and should confirm their availability.
+⏳ PENDING: Waiting for substitute confirmation
+• Employee will be notified only after substitute accepts
+• If substitute declines, you'll need to assign another
+
+Current Status: Substitute Assigned (Pending Confirmation)
         """.strip()
     
     def get_leave_status(self, leave_id: int) -> str:
