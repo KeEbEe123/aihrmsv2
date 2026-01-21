@@ -528,7 +528,9 @@ Example: "Priya Sharma" or "Skip"
         result = self.hr_agent.submit_leave_request(
             teacher_name=employee['name'],
             leave_days=leave_data['days'],
-            reason=leave_data['reason']
+            reason=leave_data['reason'],
+            suggested_substitute=leave_data.get('suggested_substitute'),
+            substitute_note=leave_data.get('substitute_note')
         )
         
         if result['status'] == 'success':
@@ -666,6 +668,9 @@ Thank you! 🙏
         if result['status'] != 'success':
             return f"❌ Error approving leave: {result['message']}"
         
+        # Get the leave record to check for employee substitute suggestion
+        leave = next((l for l in self.hr_agent.leaves if l.id == leave_id), None)
+        
         # Notify the employee
         employee_phone = self.get_employee_phone_by_leave_id(leave_id)
         if employee_phone:
@@ -675,18 +680,23 @@ Thank you! 🙏
 📅 Days: {ai_result['leave_days']} days
 📝 Reason: {ai_result['reason']}
 
-Your substitute teacher will be assigned shortly. You'll receive confirmation once everything is set up.
+Your substitute will be assigned shortly. You'll receive confirmation once everything is set up.
 
 Enjoy your time off! 🌟
             """.strip()
             
             self.send_whatsapp_message(employee_phone, employee_msg)
         
-        # Get suggested substitutes
-        substitutes = ai_result.get('substitutes', [])
-        substitute_list = "\n".join([f"• {sub}" for sub in substitutes]) if substitutes else "• No substitutes available"
-        
-        return f"""
+        # Handle employee substitute suggestion
+        if leave and leave.suggested_substitute:
+            # Employee suggested a substitute - auto-assign and notify
+            assign_result = self.hr_agent.assign_substitute(leave_id, leave.suggested_substitute)
+            
+            if assign_result['status'] == 'success':
+                # Notify the suggested substitute
+                self.notify_substitute(leave.suggested_substitute, leave_id, ai_result['teacher_name'])
+                
+                return f"""
 ✅ Leave #{leave_id} APPROVED successfully!
 
 👤 Employee: {ai_result['teacher_name']}
@@ -694,13 +704,87 @@ Enjoy your time off! 🌟
 
 Employee has been notified via WhatsApp.
 
+👥 Employee's Substitute Suggestion ACCEPTED:
+• Substitute: {leave.suggested_substitute}
+• Status: Assigned and notified via WhatsApp
+• Note: {leave.substitute_note or 'Employee suggestion'}
+
+✅ All done! Both employee and substitute have been notified.
+                """.strip()
+            else:
+                # Fallback to manual assignment if auto-assign fails
+                substitutes = ai_result.get('substitutes', [])
+                substitute_list = "\n".join([f"• {sub}" for sub in substitutes]) if substitutes else "• No substitutes available"
+                
+                return f"""
+✅ Leave #{leave_id} APPROVED successfully!
+
+👤 Employee: {ai_result['teacher_name']}
+📅 Days: {ai_result['leave_days']} days
+
+Employee has been notified via WhatsApp.
+
+⚠️ Employee suggested "{leave.suggested_substitute}" but assignment failed.
+
+🔄 Please assign a substitute manually:
+Available substitutes:
+{substitute_list}
+
+To assign: "Assign [name] to #{leave_id}"
+                """.strip()
+        else:
+            # No employee suggestion - show available substitutes
+            substitutes = ai_result.get('substitutes', [])
+            substitute_list = "\n".join([f"• {sub}" for sub in substitutes]) if substitutes else "• No substitutes available"
+            
+            substitute_note = ""
+            if leave and leave.substitute_note:
+                substitute_note = f"\n💬 Employee note: {leave.substitute_note}\n"
+            
+            return f"""
+✅ Leave #{leave_id} APPROVED successfully!
+
+👤 Employee: {ai_result['teacher_name']}
+📅 Days: {ai_result['leave_days']} days
+
+Employee has been notified via WhatsApp.{substitute_note}
+
 🔄 Next Step: Assign Substitute
 Available substitutes:
 {substitute_list}
 
 To assign: "Assign [name] to #{leave_id}"
 Example: "Assign Priya Sharma to #{leave_id}"
-        """.strip()
+            """.strip()
+    
+    def notify_substitute(self, substitute_name: str, leave_id: int, employee_name: str) -> bool:
+        """Notify substitute about assignment via WhatsApp"""
+        # Find substitute in database
+        substitute = self.hr_agent.find_teacher_by_name(substitute_name)
+        
+        if substitute and substitute.get('phone'):
+            substitute_phone = f"whatsapp:+{substitute['phone']}"
+            
+            substitute_msg = f"""
+🔔 Substitute Assignment Notification
+
+You have been assigned as a substitute teacher!
+
+📋 Details:
+• Leave Request: #{leave_id}
+• Employee: {employee_name}
+• Your Role: Substitute Teacher
+
+Please confirm your availability by replying:
+• "Accept #{leave_id}" to confirm
+• "Decline #{leave_id}" if not available
+
+Thank you for your support! 🙏
+            """.strip()
+            
+            return self.send_whatsapp_message(substitute_phone, substitute_msg)
+        
+        return False
     
     def reject_leave(self, leave_id: int, reason: str) -> str:
         """Reject a leave request"""
@@ -738,6 +822,30 @@ Please contact your manager directly to discuss alternative arrangements or resu
 
 The employee can resubmit a new request if needed.
         """.strip()
+        
+        if substitute and substitute.get('phone'):
+            substitute_phone = f"whatsapp:+{substitute['phone']}"
+            
+            substitute_msg = f"""
+🔔 Substitute Assignment Notification
+
+You have been assigned as a substitute teacher!
+
+📋 Details:
+• Leave Request: #{leave_id}
+• Employee: {employee_name}
+• Your Role: Substitute Teacher
+
+Please confirm your availability by replying:
+• "Accept #{leave_id}" to confirm
+• "Decline #{leave_id}" if not available
+
+Thank you for your support! 🙏
+            """.strip()
+            
+            return self.send_whatsapp_message(substitute_phone, substitute_msg)
+        
+        return False
     
     def assign_substitute(self, leave_id: int, substitute_name: str) -> str:
         """Assign a substitute teacher to approved leave"""
@@ -745,13 +853,23 @@ The employee can resubmit a new request if needed.
         if result['status'] != 'success':
             return f"❌ Error: {result['message']}"
         
+        # Get employee name for notification
+        leave = next((l for l in self.hr_agent.leaves if l.id == leave_id), None)
+        employee_name = leave.teacher_name if leave else "Unknown Employee"
+        
+        # Notify the substitute
+        notification_sent = self.notify_substitute(substitute_name, leave_id, employee_name)
+        
+        notification_status = "✅ Notified via WhatsApp" if notification_sent else "⚠️ WhatsApp notification failed"
+        
         return f"""
 ✅ Substitute Assigned Successfully!
 
 👤 Substitute: {substitute_name}
 📋 Leave ID: #{leave_id}
+📱 Status: {notification_status}
 
-The substitute has been notified and will confirm their availability.
+The substitute has been assigned and should confirm their availability.
         """.strip()
     
     def get_leave_status(self, leave_id: int) -> str:

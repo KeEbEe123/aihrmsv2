@@ -35,6 +35,8 @@ class Leave:
     days: int
     reason: str
     status: str = "pending"
+    suggested_substitute: Optional[str] = None
+    substitute_note: Optional[str] = None
 
 
 @dataclass
@@ -112,7 +114,9 @@ DO NOT make the final decision - only provide analysis and recommendation.
         
         return substitutes
     
-    def submit_leave_request(self, teacher_name: str, leave_days: int, reason: str) -> Dict:
+    def submit_leave_request(self, teacher_name: str, leave_days: int, reason: str, 
+                           suggested_substitute: Optional[str] = None, 
+                           substitute_note: Optional[str] = None) -> Dict:
         """Teacher submits a leave request"""
         teacher = self.find_teacher_by_name(teacher_name)
         
@@ -128,7 +132,9 @@ DO NOT make the final decision - only provide analysis and recommendation.
             end_date=datetime.now().date(),
             days=leave_days,
             reason=reason,
-            status="pending"
+            status="pending",
+            suggested_substitute=suggested_substitute,
+            substitute_note=substitute_note
         )
         self.leaves.append(leave)
         self.leave_counter += 1
