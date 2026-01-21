@@ -138,6 +138,21 @@ class UnifiedWhatsAppHandler:
         
         return any(re.search(pattern, message_lower) for pattern in all_patterns)
     
+    def is_manager_command(self, message: str) -> bool:
+        """Check if message looks like a manager command"""
+        message_lower = message.lower().strip()
+        
+        manager_keywords = [
+            'approve', 'reject', 'deny', 'status', 'list', 'pending', 
+            'assign', 'help', 'commands'
+        ]
+        
+        # Check for manager command patterns
+        has_leave_id = re.search(r'#?\d+', message)
+        has_manager_keyword = any(keyword in message_lower for keyword in manager_keywords)
+        
+        return has_manager_keyword or (has_leave_id and len(message.split()) <= 5)
+    
     def handle_substitute_response(self, phone: str, message: str) -> str:
         """Handle substitute accept/decline responses"""
         message_lower = message.lower().strip()
