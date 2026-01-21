@@ -34,7 +34,7 @@ class Leave:
     end_date: date
     days: int
     reason: str
-    status: str = "pending"  # pending, manager_approved, approved, rejected
+    status: str = "pending"  # pending, substitute_assigned, substitute_confirmed, approved, rejected
     suggested_substitute: Optional[str] = None
     substitute_note: Optional[str] = None
 
@@ -182,15 +182,18 @@ DO NOT make the final decision - only provide analysis and recommendation.
         }
     
     def approve_leave(self, leave_id: int) -> Dict:
-        """HOD approves the leave request (pending substitute confirmation)"""
+        """HOD approves the leave request (only after substitute is confirmed)"""
         leave = next((l for l in self.leaves if l.id == leave_id), None)
         if not leave:
             return {"status": "error", "message": "Leave request not found"}
         
-        leave.status = "manager_approved"  # Pending substitute confirmation
+        if leave.status != "substitute_confirmed":
+            return {"status": "error", "message": f"Cannot approve leave. Current status: {leave.status}. Substitute must be assigned and confirmed first."}
+        
+        leave.status = "approved"
         return {
             "status": "success",
-            "message": f"Leave #{leave_id} approved by manager for {leave.teacher_name}",
+            "message": f"Leave #{leave_id} fully approved for {leave.teacher_name}",
             "leave_id": leave_id
         }
     
@@ -222,18 +225,21 @@ DO NOT make the final decision - only provide analysis and recommendation.
         }
     
     def assign_substitute(self, leave_id: int, substitute_name: str) -> Dict:
-        """Assign a substitute teacher to approved leave"""
+        """Assign a substitute teacher to pending leave"""
         leave = next((l for l in self.leaves if l.id == leave_id), None)
         if not leave:
             return {"status": "error", "message": "Leave request not found"}
         
-        if leave.status != "approved":
-            return {"status": "error", "message": "Leave must be approved first"}
+        if leave.status not in ["pending", "substitute_assigned"]:
+            return {"status": "error", "message": f"Cannot assign substitute to leave with status: {leave.status}"}
         
         # Check if substitute exists
         substitute = self.find_teacher_by_name(substitute_name)
         if not substitute:
             return {"status": "error", "message": "Substitute teacher not found"}
+        
+        # Update leave status
+        leave.status = "substitute_assigned"
         
         # Create substitution record
         sub = Substitution(
@@ -269,7 +275,14 @@ DO NOT make the final decision - only provide analysis and recommendation.
         if not sub:
             return {"status": "error", "message": "Substitution not found"}
         
+        # Update substitution status
         sub.status = "confirmed"
+        
+        # Update leave status to allow manager approval
+        leave = next((l for l in self.leaves if l.id == leave_id), None)
+        if leave:
+            leave.status = "substitute_confirmed"
+        
         return {
             "status": "success",
             "message": f"Substitution confirmed by {substitute_name} for leave #{leave_id}"
