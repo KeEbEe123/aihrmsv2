@@ -1,0 +1,38 @@
+# Render Blueprint for AI-Powered HRMS WhatsApp Handler
+services:
+  - type: web
+    name: ai-hrms-whatsapp-handler
+    env: docker
+    region: oregon # Change to your preferred region
+    plan: free # Change to 'starter' or higher for production
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    
+    # Environment variables (set these in Render Dashboard for security)
+    envVars:
+      - key: GOOGLE_API_KEY
+        sync: false # Set manually in Render Dashboard
+      
+      - key: TWILIO_ACCOUNT_SID
+        sync: false # Set manually in Render Dashboard
+      
+      - key: TWILIO_AUTH_TOKEN
+        sync: false # Set manually in Render Dashboard
+      
+      - key: TWILIO_WHATSAPP_FROM
+        value: whatsapp:+14155238886
+      
+      - key: MANAGER_PHONE
+        sync: false # Set manually in Render Dashboard
+      
+      - key: PORT
+        value: 5000
+      
+      - key: PYTHONUNBUFFERED
+        value: 1
+    
+    # Health check endpoint
+    healthCheckPath: /health
+    
+    # Auto-deploy on push to main branch
+    autoDeploy: true

@@ -270,8 +270,10 @@ DO NOT make the final decision - only provide analysis and recommendation.
         }
     
     def confirm_substitution_by_leave_id(self, leave_id: int, substitute_name: str) -> Dict:
-        """Confirm substitution by leave ID and substitute name"""
-        sub = next((s for s in self.substitutions if s.leave_id == leave_id and s.substitute_name == substitute_name), None)
+        """Confirm substitution by leave ID and substitute name (case-insensitive)"""
+        sub = next((s for s in self.substitutions 
+                   if s.leave_id == leave_id 
+                   and s.substitute_name.lower().strip() == substitute_name.lower().strip()), None)
         if not sub:
             return {"status": "error", "message": "Substitution not found"}
         

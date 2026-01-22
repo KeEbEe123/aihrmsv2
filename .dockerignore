@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Test files
+test_*.py
+*_test.py
+debug_*.py
+demo.py
+
+# Temporary files
+*.log
+*.tmp
+~$*.xlsx
+
+# Other project files not needed in container
+hr_agent.py
+manager_whatsapp_handler.py
+setup_whatsapp.py
+start_unified_system.py
+test_webhook.py
+test_whatsapp_integration.py
+Procfile
+runtime.txt
+employees.numbers
+CHANGES.md
+INTEGRATION_SUMMARY.md
+QUICKSTART.md
+SETUP.md
+UNIFIED_SETUP_GUIDE.md
+
+# Keep only essential files
+# unified_whatsapp_handler.py (included)
+# integrated_hr_agent.py (included)
+# employees.xlsx (included)
+# requirements.txt (included)

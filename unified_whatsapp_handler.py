@@ -60,15 +60,22 @@ class UnifiedWhatsAppHandler:
         # Clean phone number (remove country codes, spaces, etc.)
         clean_phone = re.sub(r'[^\d]', '', phone)
         
+        print(f"DEBUG: Looking for employee with phone: {phone}")
+        print(f"DEBUG: Cleaned phone: {clean_phone}")
+        print(f"DEBUG: Last 10 digits: {clean_phone[-10:]}")
+        
         # Search in Excel database
         for _, employee in self.hr_agent.df.iterrows():
             emp_phone = str(employee.get('phone', ''))
             clean_emp_phone = re.sub(r'[^\d]', '', emp_phone)
             
             # Match last 10 digits (handles country codes)
-            if clean_phone[-10:] == clean_emp_phone[-10:]:
-                return employee.to_dict()
+            if len(clean_phone) >= 10 and len(clean_emp_phone) >= 10:
+                if clean_phone[-10:] == clean_emp_phone[-10:]:
+                    print(f"DEBUG: Found employee: {employee.get('name')} with phone {emp_phone}")
+                    return employee.to_dict()
         
+        print(f"DEBUG: No employee found for phone {phone}")
         return None
     
     def send_whatsapp_message(self, to_phone: str, message: str) -> bool:
@@ -171,10 +178,18 @@ class UnifiedWhatsAppHandler:
         
         substitute_name = substitute['name']
         
-        # Check if this person is actually assigned as substitute for this leave
-        substitution = next((s for s in self.hr_agent.substitutions if s.leave_id == leave_id and s.substitute_name == substitute_name), None)
+        # Check if this person is actually assigned as substitute for this leave (case-insensitive comparison)
+        substitution = next((s for s in self.hr_agent.substitutions 
+                           if s.leave_id == leave_id 
+                           and s.substitute_name.lower().strip() == substitute_name.lower().strip()), None)
         if not substitution:
-            return f"❌ You are not assigned as substitute for leave request #{leave_id}."
+            # Debug: Show what we're looking for
+            all_subs_for_leave = [s for s in self.hr_agent.substitutions if s.leave_id == leave_id]
+            if all_subs_for_leave:
+                assigned_names = [s.substitute_name for s in all_subs_for_leave]
+                return f"❌ You are not assigned as substitute for leave request #{leave_id}.\n\nAssigned substitutes: {', '.join(assigned_names)}\nYour name in system: {substitute_name}"
+            else:
+                return f"❌ No substitute has been assigned to leave request #{leave_id} yet."
         
         # Determine if accepting or declining
         if any(word in message_lower for word in ['accept', 'yes', 'confirm', 'ok']):
@@ -771,6 +786,8 @@ Thank you! 🙏
             return self.assign_substitute(command['leave_id'], command['substitute_name'])
         elif action == 'status':
             return self.get_leave_status(command['leave_id'])
+        elif action == 'status_all':
+            return self.get_all_leaves_status()
         elif action == 'list':
             return self.list_pending_leaves()
         elif action == 'help':
@@ -804,11 +821,14 @@ Thank you! 🙏
                     'leave_id': int(assign_match.group(2))
                 }
         
-        # Check for status inquiry
+        # Check for status inquiry - differentiate between single leave and all leaves
         elif any(word in message_lower for word in ['status', 'check', 'info']):
             leave_id_match = re.search(r'#?(\d+)', message)
             if leave_id_match:
                 return {'action': 'status', 'leave_id': int(leave_id_match.group(1))}
+            else:
+                # No ID provided, show all leaves status
+                return {'action': 'status_all'}
         
         # Check for list pending leaves
         elif any(word in message_lower for word in ['list', 'pending', 'show']):
@@ -1003,6 +1023,101 @@ Current Status: Substitute Assigned (Pending Confirmation)
         
         return status_msg.strip()
     
+    def get_all_leaves_status(self) -> str:
+        """Get comprehensive status of all leave requests"""
+        if not self.hr_agent.leaves:
+            return "📋 No leave requests in the system yet."
+        
+        # Group leaves by status
+        pending_leaves = []
+        approved_leaves = []
+        rejected_leaves = []
+        in_progress_leaves = []
+        
+        for leave in self.hr_agent.leaves:
+            if leave.status == 'approved':
+                approved_leaves.append(leave)
+            elif leave.status == 'rejected':
+                rejected_leaves.append(leave)
+            elif leave.status == 'pending':
+                pending_leaves.append(leave)
+            else:
+                in_progress_leaves.append(leave)
+        
+        msg = "📊 ALL LEAVE REQUESTS STATUS\n"
+        msg += "=" * 35 + "\n\n"
+        
+        # Pending leaves
+        if pending_leaves:
+            msg += "⏳ PENDING APPROVAL:\n"
+            msg += "-" * 35 + "\n"
+            for leave in pending_leaves:
+                msg += f"#{leave.id} - {leave.teacher_name}\n"
+                msg += f"📅 Days: {leave.days}\n"
+                msg += f"📝 Reason: {leave.reason[:50]}{'...' if len(leave.reason) > 50 else ''}\n"
+                msg += f"👥 Substitute: Not assigned\n"
+                msg += f"Action: 'Approve #{leave.id}' or 'Reject #{leave.id}'\n\n"
+        
+        # In-progress leaves (substitute assigned/confirmed)
+        if in_progress_leaves:
+            msg += "🔄 IN PROGRESS:\n"
+            msg += "-" * 35 + "\n"
+            for leave in in_progress_leaves:
+                # Get substitute info
+                subs = [s for s in self.hr_agent.substitutions if s.leave_id == leave.id]
+                sub_info = "None"
+                if subs:
+                    sub_info = f"{subs[0].substitute_name} ({subs[0].status})"
+                
+                status_emoji = "⏳" if leave.status == "substitute_assigned" else "✅"
+                msg += f"#{leave.id} - {leave.teacher_name}\n"
+                msg += f"📅 Days: {leave.days}\n"
+                msg += f"📝 Reason: {leave.reason[:50]}{'...' if len(leave.reason) > 50 else ''}\n"
+                msg += f"👥 Substitute: {sub_info}\n"
+                msg += f"🔄 Status: {leave.status.replace('_', ' ').title()}\n"
+                
+                if leave.status == "substitute_confirmed":
+                    msg += f"Action: 'Approve #{leave.id}' to finalize\n"
+                elif leave.status == "substitute_assigned":
+                    msg += f"Waiting for substitute confirmation\n"
+                msg += "\n"
+        
+        # Approved leaves
+        if approved_leaves:
+            msg += "✅ APPROVED:\n"
+            msg += "-" * 35 + "\n"
+            for leave in approved_leaves:
+                # Get substitute info
+                subs = [s for s in self.hr_agent.substitutions if s.leave_id == leave.id]
+                sub_info = "None"
+                if subs:
+                    sub_info = subs[0].substitute_name
+                
+                msg += f"#{leave.id} - {leave.teacher_name}\n"
+                msg += f"📅 Days: {leave.days}\n"
+                msg += f"📝 Reason: {leave.reason[:50]}{'...' if len(leave.reason) > 50 else ''}\n"
+                msg += f"👥 Substitute: {sub_info}\n\n"
+        
+        # Rejected leaves
+        if rejected_leaves:
+            msg += "❌ REJECTED:\n"
+            msg += "-" * 35 + "\n"
+            for leave in rejected_leaves:
+                msg += f"#{leave.id} - {leave.teacher_name}\n"
+                msg += f"📅 Days: {leave.days}\n"
+                msg += f"📝 Reason: {leave.reason[:50]}{'...' if len(leave.reason) > 50 else ''}\n\n"
+        
+        # Summary
+        msg += "=" * 35 + "\n"
+        msg += f"📊 SUMMARY:\n"
+        msg += f"Total: {len(self.hr_agent.leaves)} | "
+        msg += f"Pending: {len(pending_leaves)} | "
+        msg += f"In Progress: {len(in_progress_leaves)} | "
+        msg += f"Approved: {len(approved_leaves)} | "
+        msg += f"Rejected: {len(rejected_leaves)}"
+        
+        return msg.strip()
+    
     def list_pending_leaves(self) -> str:
         """List all pending leave requests"""
         pending_leaves = [l for l in self.hr_agent.leaves if l.status == 'pending']
@@ -1038,16 +1153,19 @@ Current Status: Substitute Assigned (Pending Confirmation)
 🤖 Manager Commands Help
 
 📋 Leave Management:
-• "List" - Show pending requests
+• "List" - Show pending requests only
+• "Status" - Show ALL leaves (pending, approved, rejected)
+• "Status #123" - Check specific leave details
 • "Approve #123" - Approve leave request
 • "Reject #123 [reason]" - Reject with reason
-• "Status #123" - Check leave status
 
 🔄 Substitute Assignment:
 • "Assign [name] to #123" - Assign substitute
 
 📞 Examples:
-• "List"
+• "Status" - See all leaves with full details
+• "List" - See only pending leaves
+• "Status #1" - Check leave #1 details
 • "Approve #1"
 • "Reject #1 Not enough coverage"
 • "Assign Priya Sharma to #1"
@@ -1110,8 +1228,12 @@ def health_check():
     return {"status": "healthy", "service": "unified-whatsapp-handler", "timestamp": datetime.now().isoformat()}
 
 if __name__ == '__main__':
+    import os
+    port = int(os.getenv('PORT', 5000))
+    debug = os.getenv('FLASK_ENV', 'production') == 'development'
+    
     print("🚀 Starting Unified WhatsApp HR Handler...")
-    print("📱 Webhook URL: http://localhost:5000/webhook")
-    print("🌐 Make sure to expose this via ngrok for Twilio")
+    print(f"📱 Webhook URL: http://0.0.0.0:{port}/webhook")
+    print("🌐 Make sure to expose this via ngrok for Twilio (local) or use Render URL (production)")
     print("👥 Handles both employee and manager messages automatically")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=debug, host='0.0.0.0', port=port)
